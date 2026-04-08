@@ -42,9 +42,9 @@ html_content = load_html()
 # ─── LOAD DATA FOR EVALUATION ──────────────────────────────────
 @st.cache_data
 def load_data():
-    path = r"C:\Users\Admin\.gemini\antigravity\scratch\returns_fraud_project\returns_fraud_dataset.csv"
+    path = r"C:\Users\Admin\Downloads\QuickCommerce_ReturnFraud_Dataset.xlsx"
     if os.path.exists(path):
-        return pd.read_csv(path)
+        return pd.read_excel(path)
     return pd.DataFrame()
 
 dataset = load_data()
@@ -156,16 +156,35 @@ with tab3:
         try:
             eval_df = dataset.copy()
             # Clean data mappings for prediction
-            eval_df["product_category_name"] = eval_df["Product_Category"]
-            eval_df["return_reason"] = eval_df["Return_Reason_Claimed"]
-            eval_df["inspection_level"] = eval_df["Inspection_Level"]
-            eval_df["warehouse_load"] = eval_df["Warehouse_Load"].apply(lambda x: "High" if x > 1000 else "Medium" if x > 500 else "Low")
+            eval_df["product_category_name"] = eval_df.get("Product_Category")
+            eval_df["return_reason"] = eval_df.get("Return_Reason") if "Return_Reason" in eval_df else eval_df.get("Return_Reason_Claimed")
+            eval_df["inspection_level"] = eval_df.get("Inspection_Level")
+            
+            if pd.api.types.is_numeric_dtype(eval_df["Warehouse_Load"]):
+                eval_df["warehouse_load"] = eval_df["Warehouse_Load"].apply(lambda x: "High" if x > 1000 else "Medium" if x > 500 else "Low")
+            else:
+                eval_df["warehouse_load"] = eval_df["Warehouse_Load"]
             
             # Map Fraud Ground Truth
-            eval_df["True_Fraud"] = eval_df["Fraud_Flag_Expert"].apply(lambda x: 1 if str(x).strip().lower() == "yes" else 0)
+            if "Fraud_Flag_Expert" in eval_df:
+                eval_df["True_Fraud"] = eval_df["Fraud_Flag_Expert"].apply(lambda x: 1 if str(x).strip().lower() == "yes" else 0)
+            elif "Return_Type" in eval_df.columns:
+                eval_df["True_Fraud"] = eval_df["Return_Type"].apply(lambda x: 1 if "fraud" in str(x).strip().lower() else 0)
+            else:
+                eval_df["True_Fraud"] = 0
 
             # Drop missing values
             eval_df = eval_df.dropna(subset=["product_category_name", "return_reason", "inspection_level", "warehouse_load", "True_Fraud"])
+            
+            # Safely encode strings to integers if encoders only contain ints
+            from sklearn.preprocessing import LabelEncoder
+            for col in ["product_category_name", "return_reason", "inspection_level", "warehouse_load"]:
+                first_val = eval_df[col].dropna().iloc[0] if len(eval_df[col].dropna()) > 0 else None
+                enc_classes = encoders[col].classes_
+                if isinstance(first_val, str) and pd.api.types.is_numeric_dtype(pd.Series(enc_classes)):
+                    le = LabelEncoder()
+                    eval_df[col] = le.fit_transform(eval_df[col].astype(str))
+                    eval_df[col] = eval_df[col].clip(upper=max(enc_classes))
             
             # Filter to labels that models have seen
             seen_pc = set(encoders["product_category_name"].classes_)
@@ -234,7 +253,15 @@ with tab3:
 
             st.divider()
             st.subheader("Sample Predictions vs Ground Truth")
-            display_df = eval_df[["Return_ID", "Product_Category", "Return_Reason_Claimed", "Warehouse_Load", "Inspection_Level", "True_Fraud", "Predicted_Fraud_Prob", "Predicted_Fraud_Class"]].head(20)
+            
+            display_cols = []
+            if "Return_ID" in eval_df.columns: display_cols.append("Return_ID")
+            elif "Order_ID" in eval_df.columns: display_cols.append("Order_ID")
+            
+            display_cols.extend(["product_category_name", "return_reason", "warehouse_load", "inspection_level", "True_Fraud", "Predicted_Fraud_Prob", "Predicted_Fraud_Class"])
+            
+            display_df = eval_df[display_cols].head(20)
+            display_df = display_df.rename(columns={"product_category_name": "Category", "return_reason": "Reason", "warehouse_load": "Load", "inspection_level": "Inspection"})
             
             st.dataframe(display_df.style.format({"Predicted_Fraud_Prob": "{:.1%}"})
                             .background_gradient(subset=["Predicted_Fraud_Prob"], cmap="Reds"),
